@@ -1,2 +1,2 @@
 # cocotb_rock
-CocoTB custom env
+CocoTB based env
