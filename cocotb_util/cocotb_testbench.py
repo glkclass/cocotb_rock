@@ -48,12 +48,6 @@ class TestBench(object):
 
     def sequencer(self, Trx: Transaction, *args):
         """Generate Trx while goal not achieved"""
-
-        # for debug
-        # trx = {'reg_name': 'HOLDOFF_TIME_ADDR', 'wrn': 0, 'reg_addr': 7, 'reg_data': 0}
-        # yield trx
-        # raise StopIteration
-
         while not self.goal_achieved():
             # choose register randomly
             self.log.info(f'Test case # {self.runs}')
