@@ -1,4 +1,6 @@
 # Byte-compiled / optimized / DLL files
+rtl_verilog_sources.list
+
 __pycache__/
 *.py[cod]
 *$py.class

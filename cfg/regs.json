@@ -1,0 +1,50 @@
+{
+    "n_regs": 171,
+    
+    "regs":
+    {
+        "CHIP_ID_ADDR":
+        {
+            "addr":         0,
+            "bit_width":    16,
+            "r_w":          0
+        },
+
+        "CHIP_VERSION_ADDR":
+        {
+            "addr":         1,
+            "bit_width":    16,
+            "r_w":          0,
+            "reg_value":    1
+        },
+
+        "RESET_ADDR":
+        {
+            "addr":         2,
+            "bit_width":    4,
+            "r_w":          1
+        },
+
+        "SPI_STATUS_ADDR":
+        {
+            "addr":         3,
+            "bit_width":    6,
+            "r_w":          0
+        },
+        "ANODE_BIAS_ADDR":
+        {
+            "addr":         16,
+            "bit_width":    16,
+            "n_regs":       128,
+            "r_w":          1,
+            "reg_value":    34952
+        },
+        "MBIST_RES_ADDR":
+        {
+            "addr":         147,
+            "bit_width":    0,
+            "n_regs":       24,
+            "r_w":          1
+        }
+    }
+}
