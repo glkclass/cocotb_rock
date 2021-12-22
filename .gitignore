@@ -1,4 +1,7 @@
 # Byte-compiled / optimized / DLL files
+user_regs.json
+user_lib.sv
+probes.v
 rtl_verilog_sources.list
 
 __pycache__/

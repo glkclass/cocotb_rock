@@ -1,0 +1,51 @@
+cfg = {
+    "n_regs": 77,
+
+    "regs":
+    {
+        "CHIP_ID_ADDR":
+        {
+            "addr":         0,
+            "bit_width":    16,
+            "r_w":          0,
+            "max_val":      16383
+        },
+
+        "version":
+        {
+            "addr":         1,
+            "bit_width":    12,
+            "r_w":          0,
+            "reg_value":    1,
+            "max_val":      4095
+        },
+
+        "betta":
+        {
+            "addr":         2,
+            "bit_width":    4,
+            "r_w":          1,
+            "max_val":      15
+
+        },
+
+
+        "gamma":
+        {
+            "addr":         3,
+            "bit_width":    1,
+            "r_w":          1,
+            "max_val":      1
+        },
+
+        "psi":
+        {
+            "addr":         147,
+            "bit_width":    9,
+            "n_regs":       1,
+            "r_w":          1,
+            "max_val":      511
+
+        }
+    }
+}

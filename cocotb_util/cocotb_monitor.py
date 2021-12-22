@@ -1,6 +1,5 @@
 # CocoTB. Base Monitor class
 
-import logging as log
 from typing import Iterable, Dict
 from cocotb.handle import SimHandleBase
 from cocotb_bus.monitors import BusMonitor as CocoTBBusMonitor
@@ -35,5 +34,5 @@ class BusMonitor(CocoTBBusMonitor):
 
     async def _monitor_recv(self):
         while True:
-            log.debug('_monitor_recv')
+            self.log.debug('_monitor_recv')
             self._recv(await self.receive())

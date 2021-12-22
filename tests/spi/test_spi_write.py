@@ -35,4 +35,6 @@ async def test_spi_write(dut):
     # Reset Rock
     await cocotb_util.reset(dut.dtop_dut.I_RESET_N, 123.1)
     await Timer(20, units='ns')
+    
+    # Start testing
     await spi_0_tb.run_tb()

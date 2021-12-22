@@ -2,14 +2,16 @@
 import os
 import time
 
-import logging as log
+import logging
 
 from cocotb.clock import Clock
 from cocotb.triggers import Timer
 from cocotb.handle import SimHandleBase
 from cocotb.result import TestSuccess
 
-log.getLogger().setLevel(log.INFO)
+log = logging.getLogger(__name__)
+log.addHandler(logging.StreamHandler())
+log.setLevel(logging.INFO)
 
 
 def set_starttime():
