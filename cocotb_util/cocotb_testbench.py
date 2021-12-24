@@ -9,6 +9,7 @@ from cocotb_coverage.coverage import coverage_section, coverage_db
 from cocotb_util.cocotb_agent import BusAgent
 from cocotb_util.cocotb_scoreboard import Scoreboard
 from cocotb_util.cocotb_transaction import Transaction
+from cocotb_util.cocotb_util import timeout
 
 
 class TestBench(object):
@@ -33,6 +34,11 @@ class TestBench(object):
         # create coverage_section decorator to be used for coverage collection
         self.coverage_section = self.coverage_define()
 
+        self.coverage_report_cfg = {
+            'status': {None: None},
+            'final': {'bins': True}
+        }
+
     def init(self):
         """Init TestBench before test started. To be overridden if needed."""
         pass
@@ -41,6 +47,7 @@ class TestBench(object):
         """Create and return coverage collector. To be overridden if needed."""
         return coverage_section()
 
+    @timeout
     def coverage_collect(self, trx):
         """Function to collect coverage. Should be called somewhere. If needed."""
         @self.coverage_section
@@ -49,14 +56,32 @@ class TestBench(object):
         foo(trx)
         self.report_coverage_status()
 
-    def report_coverage(self):
-        """Function to report final coverage result. Maybe overridden if needed"""
-        self.log.info('Coverage final results')
-        coverage_db.report_coverage(self.log.info, bins=True)
+    def set_coverage_report(self, coverage_report_cfg):
+        self.coverage_report_cfg = coverage_report_cfg
+        status_cfg = self.coverage_report_cfg.get('status', None)
+        if status_cfg is None:
+            self.log.info('No coverage status reported.')
+            self.coverage_report_cfg['status'] = {}
+        else:
+            wrong_items = []
+            for item in status_cfg:
+                cov_item = coverage_db.get(item, None)
+                cov_item_field = getattr(cov_item, status_cfg[item], None)
+                if cov_item is None or cov_item_field is None:
+                    self.log.warning(f'Wrong coverage_db address: {item}:{status_cfg[item]}')
+                    wrong_items.append(item)
+            for item in wrong_items:
+                del status_cfg[item]
 
     def report_coverage_status(self):
         """Function to report intermediate coverage status. Maybe overridden if needed"""
-        coverage_db.report_coverage(self.log.info)
+        for item in self.coverage_report_cfg['status']:
+            self.log.info(f"{item}.{self.coverage_report_cfg['status'][item]} = {getattr(coverage_db[item], self.coverage_report_cfg['status'][item]):2.2f}")
+
+    def report_coverage_final(self):
+        """Function to report final coverage result. Maybe overridden if needed"""
+        self.log.info('Coverage final results')
+        coverage_db.report_coverage(self.log.info, bins=self.coverage_report_cfg.get('final', {}).get('bins', True))
 
     async def run(self):
         """Run tests cases. To be overridden."""
@@ -88,5 +113,5 @@ class TestBench(object):
         """Run test cases."""
         await self.run()
         self.log.info(f'Finish tests. {self.runs} transactions were run.')
-        self.report_coverage()
+        self.report_coverage_final()
         raise self.scoreboard.result

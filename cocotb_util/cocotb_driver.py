@@ -4,6 +4,7 @@ from typing import Any, Iterable, Dict
 
 from cocotb.handle import SimHandleBase
 from cocotb_bus.drivers import BusDriver as CocoTBBusDriver
+from cocotb_util.cocotb_transaction import Transaction
 
 
 class BusDriver(CocoTBBusDriver):
@@ -23,14 +24,14 @@ class BusDriver(CocoTBBusDriver):
         # probes
         self.probes = probes
 
-    async def _driver_send(self, trx, sync: bool = True):
+    async def _driver_send(self, trx: Transaction, sync: bool = True):
         self.check_trx(trx)
         await self.driver_send(trx)
 
-    async def driver_send(self, trx):
+    async def driver_send(self, trx: Transaction):
         """Implementation for BusDriver. May consume time."""
-        pass
+        raise NotImplementedError("Override ``driver_send`` method")
 
-    def check_trx(self, trx):
+    def check_trx(self, trx: Transaction):
         """Check applied trx consistency. To be overridden."""
         assert trx is not None

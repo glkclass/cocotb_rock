@@ -9,6 +9,8 @@ from cocotb.triggers import Timer
 from cocotb.handle import SimHandleBase
 from cocotb.result import TestSuccess
 
+# from cocotb_util.cocotb_testbench import TestBench
+
 log = logging.getLogger(__name__)
 log.addHandler(logging.StreamHandler())
 log.setLevel(logging.INFO)
@@ -28,8 +30,12 @@ def timeout(func):
 
         if duration_hours is not None and start_time_sec is not None:
             run_time_sec = int(time.time()) - int(start_time_sec)
+
             if run_time_sec > int(duration_hours) * 3600:
                 log.warning(f'Test timeout achieved. Run time: {run_time_sec}')
+                # report final coverage after termination if use with TestBench() member
+                if len(args) > 0 and getattr(args[0], 'report_coverage_final', None) is not None:
+                    args[0].report_coverage_final()
                 raise TestSuccess
         return func(*args, **kwargs)
     return inner

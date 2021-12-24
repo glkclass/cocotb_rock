@@ -1,13 +1,12 @@
-from typing import Iterable, Mapping
-from random import randint, choices
+from typing import Iterable, Mapping, Any
 import numpy as np
 
 import cocotb
 from cocotb.triggers import RisingEdge as RE, FallingEdge as FE, Timer
 from cocotb.handle import SimHandleBase
-from cocotb_coverage.coverage import *
+# from cocotb_coverage.coverage import *
+from cocotb_coverage.coverage import coverage_section, coverage_db, CoverPoint, CoverCross
 
-from file import load
 from cocotb_util.cocotb_util import assign_probe_str, assign_probe_int
 from cocotb_util.cocotb_driver import BusDriver
 from cocotb_util.cocotb_monitor import BusMonitor
@@ -15,8 +14,7 @@ from cocotb_util.cocotb_agent import BusAgent
 from cocotb_util.cocotb_scoreboard import Scoreboard
 from cocotb_util.cocotb_transaction import Transaction
 from cocotb_util.cocotb_testbench import TestBench
-
-from cocotb_coverage.coverage import coverage_section, CoverPoint
+from cocotb_util import cocotb_util
 
 CHIP_ID = 3  # Hardcoded in RTL
 CHIP_ADDR = 0  # 3-bit chip addr, defined by ROCK external inputs
@@ -80,13 +78,13 @@ class RockSpiDriver(BusDriver):
         assert trx.reg_addr >= 0 and trx.reg_addr < 2**8, error_msg
         assert trx.reg_data >= 0 and trx.reg_data < 2**16, error_msg
 
-    async def driver_send(self, trx):
+    async def driver_send(self, trx: Transaction):
         """Write/Read trx.
             Wr mode: Send one trx
             Rd mode: Send first trx. Then send second trx wo input data to provide 'cs' and 'clk'
             for reading response on output"""
 
-        self.log.info(f"Sending {trx}")
+        self.log.info(f"Sending {repr(trx)}")
 
         cocotb.start_soon(self.gen_cs_sclk())
         for i in reversed(range(self.n_sclk)):
@@ -133,7 +131,7 @@ class RockSpiDriver(BusDriver):
             await self.gen_cs_sclk()
             assign_probe_str(self.probes.get('wr_info', None), '')
             self.log.debug(f"Finish read response trx")
-            await Timer(randint(10, 200), units='ns')  # random pause between trx
+            await Timer(np.random.randint(10, 200), units='ns')  # random pause between trx
             self.log.debug(f"Finish pause after trx")
 
 
@@ -219,7 +217,7 @@ class RockSpiMonitor(BusMonitor):
 
                 await RE(self.bus.i_cs_n)
                 self.log.debug(f"Finish reading response")
-                self.log.info(f'Read trx: Chip addr={chip_addr} : Data=0x{reg_data:04x} : Status={status}')
+                self.log.info(f'Read trx: Chip addr={chip_addr} : Data={reg_data} : Status={status}')
                 return reg_data
 
 
@@ -304,9 +302,7 @@ class RockSpiTrx(Transaction):
         }[self.reg_data_range]
 
         self.read_reg_data_expected = None
-
-        self.log.debug(self.__repr__())
-
+        self.log.debug(repr(self))
 
 class RockTestBench(TestBench):
 
@@ -328,10 +324,21 @@ class RockTestBench(TestBench):
         self.agent.driver.probes = {'wr_info': dut.probes.wr_info, 'i': dut.probes.i}
         self.agent.monitor.probes = {'rd_info': dut.probes.rd_info, 'i': dut.probes.i}
 
-        self.scoreboard = Scoreboard(dut.dtop_dut)
-        self.scoreboard.add_interface(self.agent.monitor, self.agent.monitor.expected)
+        self.scoreboard = Scoreboard(dut.dtop_dut, fail_immediately=False)
+        self.scoreboard.add_interface(
+            self.agent.monitor,
+            self.agent.monitor.expected,
+            compare_fn=None,
+            x_fn=lambda trx: trx.read_reg_data_expected,
+            strict_type=False)
 
-        self.max_runs = 20
+        self.set_coverage_report(
+            {
+                'status': {'top.reg_name_rw_data_cross': 'cover_percentage'},
+                'final': {'bins': False}
+            })
+
+        self.max_runs = 2
 
     def init(self):
         """ 1. Load Reg config.
@@ -390,8 +397,8 @@ class RockTestBench(TestBench):
         """"Emulate MCE frame with random timing in parallel to SPI access to provocate 'postponed SPI regs write' mechanism usage"""
         await Timer(20, units='ns')
         while 1:
-            mce_high_length = randint(1900, 2100)
-            mce_low_length = randint(50, 250)
+            mce_high_length = np.random.randint(1900, 2100)
+            mce_low_length = np.random.randint(50, 250)
             dut.dtop_dut.I_MCE.value = 1
             await Timer(mce_high_length, units='ns')
             dut.dtop_dut.I_MCE.value = 0
@@ -445,29 +452,18 @@ class RockTestBench(TestBench):
             CoverCross(
                 name="top.reg_name_rw_data_cross",
                 items=["top.reg_name", "top.rw", "top.reg_data"],
-                ign_bins=[("CHIP_ID_ADDR", 0, None), ("CHIP_VERSION_ADDR", 0, None), ("SPI_STATUS_ADDR", 0, None)],
+                ign_bins=[("CHIP_ID_ADDR", 1, None), ("CHIP_VERSION_ADDR", 1, None), ("SPI_STATUS_ADDR", 1, None)],
             )
         )
 
-    def report_coverage_status(self):
-        """Function to report intermediate coverage status. Maybe overridden if needed"""
-        coverage_db.report_coverage(self.log.debug)
-        self.log.info(coverage_db['top.reg_name_rw_data_cross'].cover_percentage)
-
-    def report_coverage(self):
-        """Function to report final coverage result. Maybe overridden if needed"""
-        self.log.info('Coverage final results')
-        coverage_db.report_coverage(self.log.info, bins=True)
-        self.log.info(coverage_db['top.reg_name_rw_data_cross'].cover_percentage)
-
     def test_goal_achieved(self):
-        """Stop testing when test goal achieved. To be overridden."""
+        """Stop testing when test goal achieved."""
         return (self.runs >= self.max_runs
             or coverage_db['top.reg_name_rw_data_cross'].cover_percentage > 50)
 
     async def run(self):
         """Send transactions. Store expected responces."""
-        # cocotb.start_soon(self.emulate_mce_frame(self.dut))
+        cocotb.start_soon(self.emulate_mce_frame(self.dut))
 
         for trx in self.sequencer(RockSpiTrx, self.cfg):
             # store info about runs: list of wr(1) or rd(0) runs
@@ -479,8 +475,8 @@ class RockTestBench(TestBench):
             if trx.wrn == 0:  # read op
                 # extract last written data if exists and add to list of golds (ignore 'unsupported reg addr')
                 read_reg_value_expected = self.regs[trx.reg_name].get('reg_value', 0) if self.regs[trx.reg_name].get('unsupported', 0) != 1 else 'unsupported'
-                self.agent.monitor.add_expected(read_reg_value_expected)
                 trx.read_reg_data_expected = read_reg_value_expected
+                self.agent.monitor.add_expected(trx)
             else:  # write op
                 # store written reg data
                 self.regs[trx.reg_name]['reg_value'] = trx.reg_data
@@ -527,7 +523,7 @@ cfg = {
         {
             "addr":         3,
             "bit_width":    1,
-            "r_w":          1,
+            "r_w":          0,
             'max_val':      1
         },
 
