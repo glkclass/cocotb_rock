@@ -20,7 +20,11 @@ class BusDriver(CocoTBBusDriver):
         **kwargs: Any
     ):
         self._signals = signals if signals is not None else self._signals
-        super().__init__(entity, name, clock, **kwargs)
+        super().__init__(
+            entity,
+            name=name,
+            clock=clock,
+            **kwargs)
         # probes
         self.probes = probes
 

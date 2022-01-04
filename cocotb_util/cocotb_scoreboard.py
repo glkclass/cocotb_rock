@@ -53,10 +53,10 @@ class Scoreboard(CocoTBScoreboard):
         log.debug(f"Compare {got} and {expected_val}")
 
         # Compare the types
-        if strict_type and type(got) != type(exp):
+        if strict_type and type(got) != type(expected_val):
             self.errors += 1
             log.error("Received transaction type is different than expected")
-            log.info(f"Received: {str(type(got))} but expected {str(type(exp))}")
+            log.info(f"Received: {str(type(got))} but expected {str(type(expected_val))}")
             exp.store_to_file()
             assert not self._imm, "Received transaction of wrong type. Set strict_type=False to avoid this."
             return

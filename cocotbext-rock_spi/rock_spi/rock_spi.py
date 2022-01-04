@@ -1,5 +1,6 @@
 from typing import Iterable, Mapping, Any
 import numpy as np
+import logging
 
 import cocotb
 from cocotb.triggers import RisingEdge as RE, FallingEdge as FE, Timer
@@ -7,12 +8,14 @@ from cocotb.handle import SimHandleBase
 # from cocotb_coverage.coverage import *
 from cocotb_coverage.coverage import coverage_section, coverage_db, CoverPoint, CoverCross
 
+from file import load
 from cocotb_util.cocotb_util import assign_probe_str, assign_probe_int
 from cocotb_util.cocotb_driver import BusDriver
 from cocotb_util.cocotb_monitor import BusMonitor
 from cocotb_util.cocotb_agent import BusAgent
 from cocotb_util.cocotb_scoreboard import Scoreboard
 from cocotb_util.cocotb_transaction import Transaction
+from cocotb_util.cocotb_cover import CoverProcessor
 from cocotb_util.cocotb_testbench import TestBench
 from cocotb_util import cocotb_util
 
@@ -34,7 +37,10 @@ class RockSpiDriver(BusDriver):
     ):
 
         signals = {sig: f'{sig.upper()}_{spi_idx}' for sig in spi_signals}
-        super().__init__(entity, signals, probes)
+        super().__init__(
+            entity,
+            signals=signals,
+            probes=probes)
 
         # SPI bus config
         self.sclk_half_period_us = 1 / (2 * freq_mhz)
@@ -150,7 +156,10 @@ class RockSpiMonitor(BusMonitor):
         chip_addr: int = 0
     ):
         signals = {sig: f'{sig.upper()}_{spi_idx}' for sig in spi_signals}
-        super().__init__(entity, signals, probes)
+        super().__init__(
+            entity,
+            signals=signals,
+            probes=probes)
 
         # SPI bus hard config
         self.sclk_half_period_us = 1 / (2 * freq_mhz)
@@ -159,27 +168,41 @@ class RockSpiMonitor(BusMonitor):
         self.rsv = 0  # reserved bit
         self.stop_bit = 1  # stop bit
         # soft config
-        self.chip_addr = chip_addr
+        self.chip_addr = chip_addr  # we should listen only given chip_addr
 
     async def receive(self):
         while True:
             # wait for read request
             await FE(self.bus.i_cs_n)
             read_req_detected = False
+            chip_addr_wr = 0
+            reg_data_wr = 0
+            reg_data_rd = 0
             for i in reversed(range(self.n_sclk)):
                 await FE(self.bus.i_sclk)
                 assert self.bus.i_mosi.value.binstr in ['0', '1']
-                if i == 28:
+                if i in [31, 30, 29]:
+                    if (self.bus.i_mosi.value == 0):
+                        rd_info = 'Chip addr wr'
+                        assign_probe_str(self.probes.get('rd_info', None), rd_info)
+                        chip_addr_wr = (chip_addr_wr << 1) | self.bus.i_mosi.value
+                elif i == 28:
                     if (self.bus.i_mosi.value == 0):
                         rd_info = 'Read request detected'
                         read_req_detected = True
                         assign_probe_str(self.probes.get('rd_info', None), rd_info)
                         self.log.debug('Read request detected')
+                elif i in range(3, 19):
+                    rd_info = 'Reg data written'
+                    assign_probe_str(self.probes.get('rd_info', None), rd_info)
+                    reg_data_wr = (reg_data_wr << 1) | self.bus.i_mosi.value
+                else:
+                    rd_info = 'X'
+                self.log.debug(f'{rd_info} : {i} : {self.bus.i_mosi.value}')
 
             # handle read response
             if read_req_detected:
-                chip_addr = 0
-                reg_data = 0
+                chip_addr_rd = 0
                 status = ''
                 await FE(self.bus.i_cs_n)
                 self.log.debug(f"Starting reading response")
@@ -192,22 +215,23 @@ class RockSpiMonitor(BusMonitor):
                     elif i == 25:
                         rd_info = 'One bit'
                     elif i in [24, 23, 22]:
-                        rd_info = 'Chip addr'
-                        chip_addr <<= 1
-                        chip_addr = (chip_addr << 1) | self.bus.o_miso.value
+                        rd_info = 'Chip addr rd'
+                        chip_addr_rd = (chip_addr_rd << 1) | self.bus.o_miso.value
                     elif i == 21:
                         rd_info = 'WRn'
+                        assert chip_addr_wr == chip_addr_rd, "Chip addr mismatch"
                     elif i == 20:
                         rd_info = 'Br'
                     elif i in range(4, 20):
                         rd_info = 'Reg data'
-                        reg_data = (reg_data << 1) | self.bus.o_miso.value
+                        reg_data_rd = (reg_data_rd << 1) | self.bus.o_miso.value
                     elif i == 3:
                         rd_info = 'Status'
-                        status = ['Ok', 'Error'][self.bus.o_miso.value]
+                        status = "Ok" if self.bus.o_miso.value.binstr == '0' else 'Error'
+                        assert status == 'Ok', "Error read status detected!"
                     elif i in [2, 1, 0]:
                         rd_info = 'Zero bits'
-                        # assert self.bus.o_miso.value == 0
+                        # assert self.bus.o_miso.value.binstr == '0'
                     else:
                         rd_info = 'X'
                     assign_probe_str(self.probes.get('rd_info', None), rd_info)
@@ -217,8 +241,12 @@ class RockSpiMonitor(BusMonitor):
 
                 await RE(self.bus.i_cs_n)
                 self.log.debug(f"Finish reading response")
-                self.log.info(f'Read trx: Chip addr={chip_addr} : Data={reg_data} : Status={status}')
-                return reg_data
+                self.log.info(f'Read trx: Chip addr={chip_addr_rd} : Data={reg_data_rd} : Status={status}')
+
+            wrn = 0 if read_req_detected else 1
+            reg_data = reg_data_rd if read_req_detected else reg_data_wr
+            self.log.debug(f"Monitor recieved: {wrn}, {reg_data}")
+            return wrn, reg_data
 
 
 class RockSpiAgent(BusAgent):
@@ -227,6 +255,7 @@ class RockSpiAgent(BusAgent):
         self,
         # hard config
         entity: SimHandleBase = None,
+        name: str = None,
         spi_idx: int = 0,
         freq_mhz: float = 12.5,
         driver: str = 'on',
@@ -238,20 +267,23 @@ class RockSpiAgent(BusAgent):
 
         self.rock_spi_signals = ["i_sclk", "i_cs_n", "i_mosi", "o_miso"]
 
-        self.driver = RockSpiDriver(
-            entity,
-            spi_signals=self.rock_spi_signals,
-            spi_idx=spi_idx,
-            freq_mhz=freq_mhz,
-            chip_addr=chip_addr) if driver.lower() == 'on' else None
+        self.add_driver(
+            RockSpiDriver(
+                entity,
+                spi_signals=self.rock_spi_signals,
+                spi_idx=spi_idx,
+                freq_mhz=freq_mhz,
+                chip_addr=chip_addr) if driver.lower() == 'on' else None
+        )
 
-        self.monitor = RockSpiMonitor(
-            entity,
-            spi_signals=self.rock_spi_signals,
-            spi_idx=spi_idx,
-            freq_mhz=freq_mhz,
-            chip_addr=chip_addr) if monitor.lower() == 'on' else None
-
+        self.add_monitor(
+            RockSpiMonitor(
+                entity,
+                spi_signals=self.rock_spi_signals,
+                spi_idx=spi_idx,
+                freq_mhz=freq_mhz,
+                chip_addr=chip_addr) if monitor.lower() == 'on' else None
+        )
 
 class RockSpiTrx(Transaction):
 
@@ -259,9 +291,14 @@ class RockSpiTrx(Transaction):
         super().__init__(['reg_name', 'reg_addr', 'reg_data', 'wrn', 'reg_data_range', 'read_reg_data_expected'])
 
         # get regs external config
-        assert len(args) > 0 and isinstance(args[0], dict)
+        assert len(args) == 1
+        assert isinstance(args[0], dict)
+
         self.cfg = args[0]
         self.regs = self.cfg['regs']
+
+        self.covered_regs = self.cfg.get('covered_regs', None)
+        assert self.covered_regs is not None
 
         self.read_reg_data_expected = None  # will be used to store expected read value for coverage collect
         self.reg_data_range = None  # we randomize 5 diff data values/ranges
@@ -271,6 +308,10 @@ class RockSpiTrx(Transaction):
 
         self.reg_data_range_weights = {'min0': 1, 'min1': 1, 'mid': 1, 'max0': 1, 'max1': 1}
         self.add_rand('reg_data_range', list(self.reg_data_range_weights.keys()))
+
+        def reg_name_cstr(reg_name):
+            """Soft constraint not to except when all regs will be covered"""
+            return int(reg_name not in self.covered_regs)  # read-only regs
 
         def wrn_cstr(reg_name, wrn):
             # return wrn in list(range(self.regs[reg_name]['r_w'] + 1))
@@ -304,6 +345,77 @@ class RockSpiTrx(Transaction):
         self.read_reg_data_expected = None
         self.log.debug(repr(self))
 
+
+class RockSpiCoverProcessof(CoverProcessor):
+    def __init__(self, **kwargs):
+
+        coverage_report_cfg = {
+            'status': {
+                'top.reg_name': ['new_hits', 'detailed_coverage_'],
+                'top.rw': ['new_hits'],
+                'top.reg_data': ['new_hits'],
+                'top.reg_name_rw_data_cross': ['cover_percentage', 'new_hits', 'detailed_coverage_']
+            },
+            'final': {'bins': False}
+        }
+
+        # get regs config
+        assert 'reg_cfg' in kwargs
+        self.reg_cfg = kwargs['reg_cfg']
+        self.regs = self.reg_cfg['regs']
+        super().__init__(report_cfg=coverage_report_cfg)
+
+    def define(self):
+        self.log.info('Define coverage')
+
+        def rel_reg_data(trx, bin):
+            max_val = self.regs[trx.reg_name]['max_val']
+            check_value = trx.reg_data if trx.wrn == 1 else trx.read_reg_data_expected
+
+            if bin == 'min0':
+                return check_value == 0
+            elif bin == 'min1':
+                return check_value == 1
+            elif bin == 'mid':
+                return 0 <= check_value <= max_val
+            elif bin == 'max0':
+                return check_value == max_val
+            elif bin == 'max1':
+                return check_value == max_val - 1
+            else:
+                return False
+
+        self.add_cover_items(
+            CoverPoint(
+                "top.reg_name",
+                xf=lambda trx: trx.reg_name,
+                bins=self.reg_cfg['reg_names']
+            ),
+
+            CoverPoint(
+                "top.rw",
+                xf=lambda trx: trx.wrn,
+                bins=[0, 1]
+            ),
+
+            CoverPoint(
+                "top.reg_data",
+                xf=lambda trx: trx,
+                bins=['min0', 'min1', 'mid', 'max0', 'max1'],
+                rel=rel_reg_data,
+                inj=True
+            ),
+
+            CoverCross(
+                name="top.reg_name_rw_data_cross",
+                items=["top.reg_name", "top.rw", "top.reg_data"],
+                ign_bins=[("CHIP_ID_ADDR", 1, None), ("CHIP_VERSION_ADDR", 1, None), ("SPI_STATUS_ADDR", 1, None)],
+            )
+        )
+
+
+
+
 class RockTestBench(TestBench):
 
     def __init__(
@@ -324,19 +436,21 @@ class RockTestBench(TestBench):
         self.agent.driver.probes = {'wr_info': dut.probes.wr_info, 'i': dut.probes.i}
         self.agent.monitor.probes = {'rd_info': dut.probes.rd_info, 'i': dut.probes.i}
 
-        self.scoreboard = Scoreboard(dut.dtop_dut, fail_immediately=False)
+        self.scoreboard = Scoreboard(dut.dtop_dut, fail_immediately=True)
         self.scoreboard.add_interface(
             self.agent.monitor,
             self.agent.monitor.expected,
             compare_fn=None,
-            x_fn=lambda trx: trx.read_reg_data_expected,
-            strict_type=False)
+            x_fn=lambda trx: (trx.wrn, trx.read_reg_data_expected if trx.wrn == 0 else trx.reg_data),
+            strict_type=True)
 
-        self.set_coverage_report(
-            {
-                'status': {'top.reg_name_rw_data_cross': 'cover_percentage'},
-                'final': {'bins': False}
-            })
+
+        self.coverage = RockSpiCoverProcessof(reg_cfg=self.cfg)
+
+        # self.agent.monitor.log.setLevel(logging.DEBUG)
+        # self.agent.driver.log.setLevel(logging.DEBUG)
+        # self.scoreboard.log.setLevel(logging.DEBUG)
+        self.coverage.log.setLevel(logging.DEBUG)
 
         self.max_runs = 2
 
@@ -349,9 +463,18 @@ class RockTestBench(TestBench):
         # self.cfg = load('cfg/regs.json', 'json')
         self.cfg = cfg
         self.regs = self.cfg['regs']
+        self.cfg['covered_regs'] = []
 
         # Init Rd only default values
         self.regs['CHIP_ID_ADDR']['reg_value'] = (CHIP_ID << 4) | CHIP_ADDR
+
+        # Remove 'unsupported Regs'
+        unsupported_regs = []
+        for reg_name in self.regs:
+            if self.regs[reg_name].get('unsupported', None) is not None:
+                unsupported_regs.append(reg_name)
+        for reg_name in unsupported_regs:
+            del self.regs[reg_name]
 
         # Handle array regs. There two 'array reg' pseudo-records which need to be replaced with array of regs
         array_reg_names = [reg_name for reg_name in list(self.regs.keys()) if self.regs[reg_name].get('n_regs', 1) > 1]
@@ -404,59 +527,7 @@ class RockTestBench(TestBench):
             dut.dtop_dut.I_MCE.value = 0
             await Timer(mce_low_length, units='ns')
 
-    def coverage_define(self):
-        self.log.info('Define coverage')
-
-        def rel_reg_data(trx, bin):
-            max_val = self.regs[trx.reg_name]['max_val']
-            check_value = trx.reg_data if trx.wrn == 1 else trx.read_reg_data_expected
-
-            # 'Unsupported reg' values hit all bins when reading
-            if check_value == 'unsupported':
-                return True
-
-            if bin == 'min0':
-                return check_value == 0
-            elif bin == 'min1':
-                return check_value == 1
-            elif bin == 'mid':
-                return 0 <= check_value <= max_val
-            elif bin == 'max0':
-                return check_value == max_val
-            elif bin == 'max1':
-                return check_value == max_val - 1
-            else:
-                return False
-
-        return coverage_section(
-            CoverPoint(
-                "top.reg_name",
-                xf=lambda trx: trx.reg_name,
-                bins=self.cfg['reg_names']
-            ),
-
-            CoverPoint(
-                "top.rw",
-                xf=lambda trx: trx.wrn,
-                bins=[0, 1]
-            ),
-
-            CoverPoint(
-                "top.reg_data",
-                xf=lambda trx: trx,
-                bins=['min0', 'min1', 'mid', 'max0', 'max1'],
-                rel=rel_reg_data,
-                inj=True
-            ),
-
-            CoverCross(
-                name="top.reg_name_rw_data_cross",
-                items=["top.reg_name", "top.rw", "top.reg_data"],
-                ign_bins=[("CHIP_ID_ADDR", 1, None), ("CHIP_VERSION_ADDR", 1, None), ("SPI_STATUS_ADDR", 1, None)],
-            )
-        )
-
-    def test_goal_achieved(self):
+    def stop(self):
         """Stop testing when test goal achieved."""
         return (self.runs >= self.max_runs
             or coverage_db['top.reg_name_rw_data_cross'].cover_percentage > 50)
@@ -465,7 +536,7 @@ class RockTestBench(TestBench):
         """Send transactions. Store expected responces."""
         cocotb.start_soon(self.emulate_mce_frame(self.dut))
 
-        for trx in self.sequencer(RockSpiTrx, self.cfg):
+        for trx in self.sequencer(RockSpiTrx, self.stop, self.cfg):
             # store info about runs: list of wr(1) or rd(0) runs
             run_trx = self.regs[trx.reg_name].get('run_trx', None)
             if run_trx is None:
@@ -473,16 +544,18 @@ class RockTestBench(TestBench):
             self.regs[trx.reg_name]['run_trx'].append(trx.wrn)
 
             if trx.wrn == 0:  # read op
-                # extract last written data if exists and add to list of golds (ignore 'unsupported reg addr')
-                read_reg_value_expected = self.regs[trx.reg_name].get('reg_value', 0) if self.regs[trx.reg_name].get('unsupported', 0) != 1 else 'unsupported'
+                # extract last written data if exists and add to list of golds
+                read_reg_value_expected = self.regs[trx.reg_name].get('reg_value', 0)
                 trx.read_reg_data_expected = read_reg_value_expected
-                self.agent.monitor.add_expected(trx)
             else:  # write op
                 # store written reg data
                 self.regs[trx.reg_name]['reg_value'] = trx.reg_data
 
+            self.log.info(trx)
+            self.agent.monitor.add_expected(trx)
+
             await self.agent.driver.send(trx)
-            self.coverage_collect(trx)
+            self.coverage.collect(trx)
 
 
 

@@ -21,7 +21,7 @@ class Transaction(Randomized):
             store_trx_fname: str = 'store_trx.txt',  # file name to store trx
             reset_store_trx_file: bool = True):  # flag to remove trx stored at previous run
         super().__init__()
-        self.log = SimLog("cocotb.testbench")
+        self.log = SimLog("cocotb.testbench.trx")
         # self.log.addHandler(logging.StreamHandler())
         self.log.setLevel(logging.INFO)
 
@@ -37,13 +37,18 @@ class Transaction(Randomized):
             if osp.isfile(self.store_trx_fname):
                 os.remove(self.store_trx_fname)
 
-    def randomize(self):
-        super().randomize()
-
     def __repr__(self):
         """Transaction object items string representation"""
         foo = {item: getattr(self, item, None) for item in self._items}
         return f'{foo}'
+
+    def randomize(self):
+        super().randomize()
+
+    def post_randomize(self):
+        """To be overridden"""
+        self.log.debug('Not implemented')
+        # self.load_from_file()
 
     def load_from_file(self, fname=None):
         """Load trx content from file"""
@@ -60,7 +65,7 @@ class Transaction(Randomized):
 
         # overwrite trx using 'data from file'
         try:
-            trx = next(self.load_from_file_gen)
+            trx = next(self._load_from_file_gen)
         except StopIteration:
             self.log.warning(f'Trx from file are over')
         else:

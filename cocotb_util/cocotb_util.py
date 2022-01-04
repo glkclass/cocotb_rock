@@ -21,6 +21,15 @@ def set_starttime():
     os.environ['COCOTB_START_TIME_SECONDS'] = str(int(time.time()))
 
 
+def static_vars(**kwargs):
+    """Static variable emulate"""
+    def decorate(func):
+        for k in kwargs:
+            setattr(func, k, kwargs[k])
+        return func
+    return decorate
+
+
 def timeout(func):
     """ Timeout decorator.
         Stop test when timeout achieved (appropriate env vars should be set up at the test start point)"""
