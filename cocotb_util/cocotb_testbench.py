@@ -9,7 +9,7 @@ from cocotb_coverage.coverage import coverage_section, coverage_db
 from cocotb_util.cocotb_agent import BusAgent
 from cocotb_util.cocotb_scoreboard import Scoreboard
 from cocotb_util.cocotb_transaction import Transaction
-from cocotb_util.cocotb_cover import CoverProcessor
+from cocotb_util.cocotb_coverage_processor import CoverProcessor
 from cocotb_util.cocotb_util import timeout, static_vars
 
 

@@ -6,16 +6,18 @@ import cocotb
 from cocotb.triggers import RisingEdge as RE, FallingEdge as FE, Timer
 from cocotb.handle import SimHandleBase
 # from cocotb_coverage.coverage import *
-from cocotb_coverage.coverage import coverage_section, coverage_db, CoverPoint, CoverCross
+from cocotb_coverage.coverage import coverage_db
 
-from file import load
+from scrpt.file import load
 from cocotb_util.cocotb_util import assign_probe_str, assign_probe_int
 from cocotb_util.cocotb_driver import BusDriver
 from cocotb_util.cocotb_monitor import BusMonitor
 from cocotb_util.cocotb_agent import BusAgent
 from cocotb_util.cocotb_scoreboard import Scoreboard
 from cocotb_util.cocotb_transaction import Transaction
-from cocotb_util.cocotb_cover import CoverProcessor
+
+from cocotb_util.cocotb_coverage import CoverPoint, CoverCross
+from cocotb_util.cocotb_coverage_processor import CoverProcessor
 from cocotb_util.cocotb_testbench import TestBench
 from cocotb_util import cocotb_util
 
@@ -174,34 +176,41 @@ class RockSpiMonitor(BusMonitor):
         while True:
             # wait for read request
             await FE(self.bus.i_cs_n)
-            read_req_detected = False
             chip_addr_wr = 0
+            reg_addr = 0
             reg_data_wr = 0
             reg_data_rd = 0
             for i in reversed(range(self.n_sclk)):
                 await FE(self.bus.i_sclk)
                 assert self.bus.i_mosi.value.binstr in ['0', '1']
                 if i in [31, 30, 29]:
-                    if (self.bus.i_mosi.value == 0):
-                        rd_info = 'Chip addr wr'
-                        assign_probe_str(self.probes.get('rd_info', None), rd_info)
-                        chip_addr_wr = (chip_addr_wr << 1) | self.bus.i_mosi.value
+                    rd_info = 'Chip addr wr'
+                    chip_addr_wr = (chip_addr_wr << 1) | self.bus.i_mosi.value
                 elif i == 28:
                     if (self.bus.i_mosi.value == 0):
-                        rd_info = 'Read request detected'
-                        read_req_detected = True
-                        assign_probe_str(self.probes.get('rd_info', None), rd_info)
+                        wrn = 0
+                        rd_info = 'Rd op'
                         self.log.debug('Read request detected')
+                    else:
+                        wrn = 1
+                        rd_info = 'Wr op'
+                elif i in range(19, 27):
+                    rd_info = 'Reg addr'
+                    reg_addr = (reg_addr << 1) | self.bus.i_mosi.value
                 elif i in range(3, 19):
                     rd_info = 'Reg data written'
-                    assign_probe_str(self.probes.get('rd_info', None), rd_info)
                     reg_data_wr = (reg_data_wr << 1) | self.bus.i_mosi.value
+                elif i == 0:
+                    rd_info = 'Stp'
+                    assert self.bus.i_mosi.value == self.stop_bit
                 else:
                     rd_info = 'X'
                 self.log.debug(f'{rd_info} : {i} : {self.bus.i_mosi.value}')
+                assign_probe_str(self.probes.get('rd_info', None), rd_info)
+                assign_probe_int(self.probes.get('i', None), i)
 
             # handle read response
-            if read_req_detected:
+            if wrn == 0:
                 chip_addr_rd = 0
                 status = ''
                 await FE(self.bus.i_cs_n)
@@ -243,10 +252,9 @@ class RockSpiMonitor(BusMonitor):
                 self.log.debug(f"Finish reading response")
                 self.log.info(f'Read trx: Chip addr={chip_addr_rd} : Data={reg_data_rd} : Status={status}')
 
-            wrn = 0 if read_req_detected else 1
-            reg_data = reg_data_rd if read_req_detected else reg_data_wr
-            self.log.debug(f"Monitor recieved: {wrn}, {reg_data}")
-            return wrn, reg_data
+            reg_data = reg_data_rd if wrn == 0 else reg_data_wr
+            self.log.debug(f"Monitor recieved: {wrn}, {reg_addr}, {reg_data}")
+            return wrn, reg_addr, reg_data
 
 
 class RockSpiAgent(BusAgent):
@@ -351,12 +359,10 @@ class RockSpiCoverProcessof(CoverProcessor):
 
         coverage_report_cfg = {
             'status': {
-                'top.reg_name': ['new_hits', 'detailed_coverage_'],
-                'top.rw': ['new_hits'],
-                'top.reg_data': ['new_hits'],
-                'top.reg_name_rw_data_cross': ['cover_percentage', 'new_hits', 'detailed_coverage_']
+                'top.reg_data': ['new_hits', 'covered_bins'],
+                'top.reg_name_rw_data_cross': ['cover_percentage', 'new_hits', 'covered_bins', 'bin_cnt']
             },
-            'final': {'bins': False}
+            'final': {'bins': True}
         }
 
         # get regs config
@@ -376,12 +382,12 @@ class RockSpiCoverProcessof(CoverProcessor):
                 return check_value == 0
             elif bin == 'min1':
                 return check_value == 1
-            elif bin == 'mid':
-                return 0 <= check_value <= max_val
             elif bin == 'max0':
                 return check_value == max_val
             elif bin == 'max1':
-                return check_value == max_val - 1
+                return check_value == (max_val - 1)
+            elif bin == 'mid':
+                return 0 <= check_value <= max_val if max_val < 4 else 2 <= check_value <= (max_val - 2)
             else:
                 return False
 
@@ -401,9 +407,9 @@ class RockSpiCoverProcessof(CoverProcessor):
             CoverPoint(
                 "top.reg_data",
                 xf=lambda trx: trx,
-                bins=['min0', 'min1', 'mid', 'max0', 'max1'],
+                bins=['min0', 'min1', 'max0', 'max1', 'mid'],
                 rel=rel_reg_data,
-                inj=True
+                inj=False
             ),
 
             CoverCross(
@@ -412,9 +418,6 @@ class RockSpiCoverProcessof(CoverProcessor):
                 ign_bins=[("CHIP_ID_ADDR", 1, None), ("CHIP_VERSION_ADDR", 1, None), ("SPI_STATUS_ADDR", 1, None)],
             )
         )
-
-
-
 
 class RockTestBench(TestBench):
 
@@ -435,24 +438,35 @@ class RockTestBench(TestBench):
         )
         self.agent.driver.probes = {'wr_info': dut.probes.wr_info, 'i': dut.probes.i}
         self.agent.monitor.probes = {'rd_info': dut.probes.rd_info, 'i': dut.probes.i}
+        self.agent.monitor.add_callback(self.catch_reset)
 
         self.scoreboard = Scoreboard(dut.dtop_dut, fail_immediately=True)
         self.scoreboard.add_interface(
             self.agent.monitor,
             self.agent.monitor.expected,
             compare_fn=None,
-            x_fn=lambda trx: (trx.wrn, trx.read_reg_data_expected if trx.wrn == 0 else trx.reg_data),
+            x_fn=lambda trx: (trx.wrn, trx.reg_addr, trx.read_reg_data_expected if trx.wrn == 0 else trx.reg_data),
             strict_type=True)
-
 
         self.coverage = RockSpiCoverProcessof(reg_cfg=self.cfg)
 
         # self.agent.monitor.log.setLevel(logging.DEBUG)
         # self.agent.driver.log.setLevel(logging.DEBUG)
         # self.scoreboard.log.setLevel(logging.DEBUG)
-        self.coverage.log.setLevel(logging.DEBUG)
+        # self.coverage.log.setLevel(logging.DEBUG)
 
         self.max_runs = 2
+
+    def catch_reset(self, got):
+        """Catch reset trx and reset written reg content"""
+        assert isinstance(got, (tuple, list)) and len(got) == 3
+        WRN = 1
+        RESET_REG_ADDR = 2
+        RESET_REG_CODE = 9
+        if got[0] == WRN and got[1] == RESET_REG_ADDR and got[2] == RESET_REG_CODE:
+            self.warning('Reset Regs')
+            for reg in self.regs:
+                del self.regs[reg]['reg_value']
 
     def init(self):
         """ 1. Load Reg config.
@@ -466,7 +480,7 @@ class RockTestBench(TestBench):
         self.cfg['covered_regs'] = []
 
         # Init Rd only default values
-        self.regs['CHIP_ID_ADDR']['reg_value'] = (CHIP_ID << 4) | CHIP_ADDR
+        self.regs['CHIP_ID_ADDR']['reset_reg_value'] = (CHIP_ID << 4) | CHIP_ADDR
 
         # Remove 'unsupported Regs'
         unsupported_regs = []
@@ -488,7 +502,7 @@ class RockTestBench(TestBench):
                                             'addr':         start_addr + reg_i,
                                             'bit_width':    self.regs[array_reg_name]['bit_width'],
                                             'r_w':          self.regs[array_reg_name]['r_w'],
-                                            'reg_value':    self.regs[array_reg_name]['reg_value']
+                                            'reset_reg_value':    self.regs[array_reg_name]['reset_reg_value']
 
                                         }
                 del self.regs[array_reg_name]  # remove array reg pseudo-record
@@ -530,7 +544,7 @@ class RockTestBench(TestBench):
     def stop(self):
         """Stop testing when test goal achieved."""
         return (self.runs >= self.max_runs
-            or coverage_db['top.reg_name_rw_data_cross'].cover_percentage > 50)
+            or coverage_db['top.reg_name_rw_data_cross'].cover_percentage == 100)
 
     async def run(self):
         """Send transactions. Store expected responces."""
@@ -545,7 +559,9 @@ class RockTestBench(TestBench):
 
             if trx.wrn == 0:  # read op
                 # extract last written data if exists and add to list of golds
-                read_reg_value_expected = self.regs[trx.reg_name].get('reg_value', 0)
+                read_reg_value_expected = self.regs[trx.reg_name].get('reg_value', None)
+                if read_reg_value_expected is None:
+                    read_reg_value_expected = self.regs[trx.reg_name].get('reset_reg_value', 0)
                 trx.read_reg_data_expected = read_reg_value_expected
             else:  # write op
                 # store written reg data
@@ -573,30 +589,20 @@ cfg = {
             'max_val':      16383
         },
 
-        "version":
-        {
-            "addr":         1,
-            "bit_width":    12,
-            "r_w":          0,
-            "reg_value":    1,
-            'max_val':      4095
-        },
-
-        "betta":
+        "res":
         {
             "addr":         2,
             "bit_width":    4,
             "r_w":          1,
             'max_val':      15
-
         },
 
 
         "gamma":
         {
-            "addr":         3,
+            "addr":         4,
             "bit_width":    1,
-            "r_w":          0,
+            "r_w":          1,
             'max_val':      1
         },
 
