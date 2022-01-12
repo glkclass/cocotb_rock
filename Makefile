@@ -15,7 +15,7 @@ export RANDOM_SEED = 1638188048
 export COCOTB_LOG_LEVEL = INFO
 export COCOTB_REDUCED_LOG_FMT = 0
 
-export PYTHONPATH = ../cocotb_repos/cocotb-coverage:/home/anton/.config/sublime-text/Packages/Todo:cocotbext-rock_spi
+export PYTHONPATH = ../cocotb_repos:../cocotb_repos/cocotb-coverage:/home/anton/.config/sublime-text/Packages/Todo:cocotbext-rock_spi
 
 # defaults
 SIM ?= xcelium

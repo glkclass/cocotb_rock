@@ -14,3 +14,4 @@ log.setLevel(logging.INFO)
 
 # init test start time to handle test timeout scenario
 set_starttime()
+init_random_seed()

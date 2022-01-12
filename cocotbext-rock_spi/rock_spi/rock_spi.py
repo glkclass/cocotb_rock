@@ -1,12 +1,14 @@
 from typing import Iterable, Mapping, Any
 import numpy as np
 import logging
+import importlib
 
 import cocotb
 from cocotb.triggers import RisingEdge as RE, FallingEdge as FE, Timer
 from cocotb.handle import SimHandleBase
 # from cocotb_coverage.coverage import *
-from cocotb_coverage.coverage import coverage_db
+cocotb_coverage = importlib.import_module('cocotb-coverage.cocotb_coverage.coverage')
+coverage_db = cocotb_coverage.coverage_db
 
 from scrpt.file import load
 from cocotb_util.cocotb_util import assign_probe_str, assign_probe_int
@@ -354,7 +356,7 @@ class RockSpiTrx(Transaction):
         self.log.debug(repr(self))
 
 
-class RockSpiCoverProcessof(CoverProcessor):
+class RockSpiCoverProcessor(CoverProcessor):
     def __init__(self, **kwargs):
 
         coverage_report_cfg = {
@@ -448,7 +450,7 @@ class RockTestBench(TestBench):
             x_fn=lambda trx: (trx.wrn, trx.reg_addr, trx.read_reg_data_expected if trx.wrn == 0 else trx.reg_data),
             strict_type=True)
 
-        self.coverage = RockSpiCoverProcessof(reg_cfg=self.cfg)
+        self.coverage = RockSpiCoverProcessor(reg_cfg=self.cfg)
 
         # self.agent.monitor.log.setLevel(logging.DEBUG)
         # self.agent.driver.log.setLevel(logging.DEBUG)
