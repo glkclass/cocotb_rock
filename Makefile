@@ -5,13 +5,18 @@
 
 
 # user ENV
-export COCOTB_TIMEOUT_HOURS = 1
+export COCOTB_TIMEOUT_HOURS = 11
 
 # DUT defines
 export DUT_GENERATE_WAVE = 0
 
 # ENV
-export RANDOM_SEED = 1638188048
+# fail seed
+export RANDOM_SEED = 1642088926
+
+# last run seed
+# export RANDOM_SEED = 1642152286
+
 export COCOTB_LOG_LEVEL = INFO
 export COCOTB_REDUCED_LOG_FMT = 0
 

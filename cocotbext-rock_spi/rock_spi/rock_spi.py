@@ -1,4 +1,4 @@
-from typing import Iterable, Mapping, Any
+from typing import Iterable, Mapping
 import numpy as np
 import logging
 import importlib
@@ -21,7 +21,7 @@ from cocotb_util.cocotb_transaction import Transaction
 from cocotb_util.cocotb_coverage import CoverPoint, CoverCross
 from cocotb_util.cocotb_coverage_processor import CoverProcessor
 from cocotb_util.cocotb_testbench import TestBench
-from cocotb_util import cocotb_util
+from cocotb_util.cocotb_util import static_vars
 
 CHIP_ID = 3  # Hardcoded in RTL
 CHIP_ADDR = 0  # 3-bit chip addr, defined by ROCK external inputs
@@ -252,10 +252,10 @@ class RockSpiMonitor(BusMonitor):
 
                 await RE(self.bus.i_cs_n)
                 self.log.debug(f"Finish reading response")
-                self.log.info(f'Read trx: Chip addr={chip_addr_rd} : Data={reg_data_rd} : Status={status}')
+                self.log.debug(f'Read trx: Chip addr={chip_addr_rd} : Data={reg_data_rd} : Status={status}')
 
             reg_data = reg_data_rd if wrn == 0 else reg_data_wr
-            self.log.debug(f"Monitor recieved: {wrn}, {reg_addr}, {reg_data}")
+            self.log.info(f"Monitor recieved: wrn={wrn}, reg_addr={reg_addr}, reg_data={reg_data}")
             return wrn, reg_addr, reg_data
 
 
@@ -297,6 +297,9 @@ class RockSpiAgent(BusAgent):
 
 class RockSpiTrx(Transaction):
 
+    reg_data_range_weights = {'min0': 1, 'min1': 1, 'mid': 1, 'max0': 1, 'max1': 1}
+    reg_data_ranges = list(reg_data_range_weights.keys())
+
     def __init__(self, *args):
         super().__init__(['reg_name', 'reg_addr', 'reg_data', 'wrn', 'reg_data_range', 'read_reg_data_expected'])
 
@@ -316,12 +319,16 @@ class RockSpiTrx(Transaction):
         self.add_rand('wrn', [0, 1])
         self.add_rand('reg_name', self.cfg['reg_names'])
 
-        self.reg_data_range_weights = {'min0': 1, 'min1': 1, 'mid': 1, 'max0': 1, 'max1': 1}
-        self.add_rand('reg_data_range', list(self.reg_data_range_weights.keys()))
+        self.add_rand('reg_data_range', self.reg_data_ranges)
 
         def reg_name_cstr(reg_name):
             """Soft constraint not to except when all regs will be covered"""
-            return int(reg_name not in self.covered_regs)  # read-only regs
+            try:
+                return self.covered_regs[reg_name]
+            except KeyError:
+                return 1
+            # return int(reg_name not in self.covered_regs.keys())  # read-only regs
+            # return reg_name in ["CHIP_ID_ADDR", "CHIP_VERSION_ADDR", "SPI_STATUS_ADDR"]
 
         def wrn_cstr(reg_name, wrn):
             # return wrn in list(range(self.regs[reg_name]['r_w'] + 1))
@@ -336,6 +343,7 @@ class RockSpiTrx(Transaction):
             else:
                 return True   # doesn't matter
 
+        self.add_constraint(reg_name_cstr)
         self.add_constraint(wrn_cstr)
         self.add_constraint(reg_data_cstr)
         self.solve_order('reg_name', 'wrn', 'reg_data_range')
@@ -344,13 +352,10 @@ class RockSpiTrx(Transaction):
         self.reg_addr = self.regs[self.reg_name]['addr']
 
         max_val = self.regs[self.reg_name]['max_val']
-        self.reg_data = {
-            'min0': 0,
-            'min1': 1,
-            'mid': np.random.randint(0, max_val + 1),
-            'max0': max_val - 1,
-            'max1': max_val
-        }[self.reg_data_range]
+        self.reg_data = dict(zip(
+            self.reg_data_ranges,
+            (0, 1, np.random.randint(0, max_val + 1), max_val - 1, max_val))
+        )[self.reg_data_range]
 
         self.read_reg_data_expected = None
         self.log.debug(repr(self))
@@ -358,20 +363,11 @@ class RockSpiTrx(Transaction):
 
 class RockSpiCoverProcessor(CoverProcessor):
     def __init__(self, **kwargs):
-
-        coverage_report_cfg = {
-            'status': {
-                'top.reg_data': ['new_hits', 'covered_bins'],
-                'top.reg_name_rw_data_cross': ['cover_percentage', 'new_hits', 'covered_bins', 'bin_cnt']
-            },
-            'final': {'bins': True}
-        }
-
         # get regs config
         assert 'reg_cfg' in kwargs
         self.reg_cfg = kwargs['reg_cfg']
         self.regs = self.reg_cfg['regs']
-        super().__init__(report_cfg=coverage_report_cfg)
+        super().__init__(trx=RockSpiTrx)
 
     def define(self):
         self.log.info('Define coverage')
@@ -393,6 +389,14 @@ class RockSpiCoverProcessor(CoverProcessor):
             else:
                 return False
 
+        cross_ignore_bins = [
+            # read only regs containing cons values
+            ("CHIP_ID_ADDR", 1, None), ("CHIP_VERSION_ADDR", 1, None), ("SPI_STATUS_ADDR", 1, None),
+            ("CHIP_ID_ADDR", 0, [item for item in self.trx.reg_data_ranges if item not in ['mid']]),
+            ("CHIP_VERSION_ADDR", 0, [item for item in self.trx.reg_data_ranges if item not in ['min1']]),
+            ("SPI_STATUS_ADDR", 0, [item for item in self.trx.reg_data_ranges if item not in ['min0']])
+        ]
+
         self.add_cover_items(
             CoverPoint(
                 "top.reg_name",
@@ -409,7 +413,7 @@ class RockSpiCoverProcessor(CoverProcessor):
             CoverPoint(
                 "top.reg_data",
                 xf=lambda trx: trx,
-                bins=['min0', 'min1', 'max0', 'max1', 'mid'],
+                bins=self.trx.reg_data_ranges,
                 rel=rel_reg_data,
                 inj=False
             ),
@@ -417,7 +421,7 @@ class RockSpiCoverProcessor(CoverProcessor):
             CoverCross(
                 name="top.reg_name_rw_data_cross",
                 items=["top.reg_name", "top.rw", "top.reg_data"],
-                ign_bins=[("CHIP_ID_ADDR", 1, None), ("CHIP_VERSION_ADDR", 1, None), ("SPI_STATUS_ADDR", 1, None)],
+                ign_bins=cross_ignore_bins,
             )
         )
 
@@ -430,6 +434,8 @@ class RockTestBench(TestBench):
 
         super().__init__()
         self.dut = dut
+        self.max_runs = 100000
+
 
         self.agent = RockSpiAgent(
             dut.dtop_dut,
@@ -451,13 +457,25 @@ class RockTestBench(TestBench):
             strict_type=True)
 
         self.coverage = RockSpiCoverProcessor(reg_cfg=self.cfg)
+        self.coverage.add_status_report_callback(self.coverage_status_report)
+        self.coverage.add_final_report_callback(self.coverage_final_report)
+        self.cfg['covered_regs'] = coverage_db['top.reg_name_rw_data_cross'].covered_bins['top.reg_name']
 
         # self.agent.monitor.log.setLevel(logging.DEBUG)
         # self.agent.driver.log.setLevel(logging.DEBUG)
         # self.scoreboard.log.setLevel(logging.DEBUG)
         # self.coverage.log.setLevel(logging.DEBUG)
 
-        self.max_runs = 2
+    def coverage_status_report(self):
+        self.log.info(f"Cross coverage: {coverage_db['top.reg_name_rw_data_cross'].cover_percentage:2.2f}")
+
+        if 0 == self.runs % 50 and 0 != self.runs:
+            # coverage_db.report_coverage(self.log.info, bins=True, node='top.reg_name_rw_data_cross')
+            self.log.info(f"Covered bins: {coverage_db['top.reg_name_rw_data_cross'].covered_bins}")
+
+    def coverage_final_report(self):
+        coverage_db.report_coverage(self.log.info, bins=False)
+        # coverage_db.report_coverage(self.log.info, bins=True, node='top.reg_name_rw_data_cross')
 
     def catch_reset(self, got):
         """Catch reset trx and reset written reg content"""
@@ -476,10 +494,9 @@ class RockTestBench(TestBench):
             3. Prepare weights for random test generation"""
 
         # Load Reg config
-        # self.cfg = load('cfg/regs.json', 'json')
-        self.cfg = cfg
+        self.cfg = load('cfg/regs.json', 'json')
+        # self.cfg = cfg
         self.regs = self.cfg['regs']
-        self.cfg['covered_regs'] = []
 
         # Init Rd only default values
         self.regs['CHIP_ID_ADDR']['reset_reg_value'] = (CHIP_ID << 4) | CHIP_ADDR
@@ -489,6 +506,10 @@ class RockTestBench(TestBench):
         for reg_name in self.regs:
             if self.regs[reg_name].get('unsupported', None) is not None:
                 unsupported_regs.append(reg_name)
+
+            if self.regs[reg_name].get('ignored', None) is not None:
+                unsupported_regs.append(reg_name)
+
         for reg_name in unsupported_regs:
             del self.regs[reg_name]
 
@@ -543,6 +564,13 @@ class RockTestBench(TestBench):
             dut.dtop_dut.I_MCE.value = 0
             await Timer(mce_low_length, units='ns')
 
+    async def catch_mbist_run(self, dut):
+        await Timer(20, units='ns')
+        while 1:
+            await RE(dut.dtop_dut.u_reg_file.mbist_done)
+            await Timer(20, units='ns')
+            self.log.warning('Mbist finished!')
+
     def stop(self):
         """Stop testing when test goal achieved."""
         return (self.runs >= self.max_runs
@@ -551,6 +579,7 @@ class RockTestBench(TestBench):
     async def run(self):
         """Send transactions. Store expected responces."""
         cocotb.start_soon(self.emulate_mce_frame(self.dut))
+        cocotb.start_soon(self.catch_mbist_run(self.dut))
 
         for trx in self.sequencer(RockSpiTrx, self.stop, self.cfg):
             # store info about runs: list of wr(1) or rd(0) runs
@@ -569,7 +598,6 @@ class RockTestBench(TestBench):
                 # store written reg data
                 self.regs[trx.reg_name]['reg_value'] = trx.reg_data
 
-            self.log.info(trx)
             self.agent.monitor.add_expected(trx)
 
             await self.agent.driver.send(trx)
@@ -580,6 +608,7 @@ class RockTestBench(TestBench):
 
 cfg = {
     "n_regs": 77,
+    'covered_regs': [],
 
     "regs":
     {
@@ -626,5 +655,5 @@ if __name__ == "__main__":
 
     foo = RockSpiTrx(cfg)
 
-    for _ in range(100):
+    for _ in range(1000):
         foo.randomize()

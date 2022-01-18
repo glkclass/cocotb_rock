@@ -23,7 +23,7 @@ initial
             end
 
         $timeformat(-9, 3, " ns");
-        timeout_sim(30ms, 1ms);
+        timeout_sim(100ms, 1ms);
     end
 
 //--------------------------------------------------------------------------
